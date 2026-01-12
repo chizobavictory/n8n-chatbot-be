@@ -2,7 +2,7 @@ services:
   - type: web
     name: n8n-chatbot-backend
     env: docker
-    plan: free # or 'standard', 'starter' is deprecated for DBs but might still work for Services, using 'free' for safety
+    plan: starter # 'free' is invalid for web services, reverting to 'starter'
     # ipAllowList: [] # Enterprise only feature
     envVars:
       - key: DB_TYPE
