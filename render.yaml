@@ -8,25 +8,21 @@ services:
       - key: DB_TYPE
         value: postgresdb
       - key: DB_POSTGRESDB_HOST
-        fromService:
-          type: psql
+        fromDatabase:
           name: n8n-db
           property: host
       - key: DB_POSTGRESDB_PORT
         value: 5432
       - key: DB_POSTGRESDB_DATABASE
-        fromService:
-          type: psql
+        fromDatabase:
           name: n8n-db
           property: database
       - key: DB_POSTGRESDB_USER
-        fromService:
-          type: psql
+        fromDatabase:
           name: n8n-db
           property: user
       - key: DB_POSTGRESDB_PASSWORD
-        fromService:
-          type: psql
+        fromDatabase:
           name: n8n-db
           property: password
       - key: N8N_BASIC_AUTH_ACTIVE
@@ -42,7 +38,7 @@ services:
       - key: N8N_ENCRYPTION_KEY
         generateValue: true
       - key: OPENAI_API_KEY
-        sync: false # Requires manual entry in Render dashboard
+        sync: false
       # Redis Environment Variables for the Redis Nodes in n8n
       - key: REDIS_HOST
         fromService:
@@ -54,11 +50,6 @@ services:
           type: redis
           name: n8n-redis
           property: port
-      - key: REDIS_PASSWORD
-        fromService:
-          type: redis
-          name: n8n-redis
-          property: password
 
   - type: redis
     name: n8n-redis
