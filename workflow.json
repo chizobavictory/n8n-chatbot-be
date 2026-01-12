@@ -926,7 +926,7 @@
           "interval": [
             {
               "field": "minutes",
-              "minutesInterval": 10
+              "minutesInterval": 1
             }
           ]
         }
