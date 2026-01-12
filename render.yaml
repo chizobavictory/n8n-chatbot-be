@@ -59,7 +59,7 @@ services:
   - type: redis
     name: n8n-redis
     plan: free # Redis free tier
-    # ipAllowList: [] # Enterprise only
+    ipAllowList: [] # Required for Redis, allows internal connections
 
 databases:
   - name: n8n-db
