@@ -6,6 +6,8 @@ This repository contains the n8n workflow, infrastructure configuration, and dat
 
 The backend is built using **n8n** as the primary orchestration engine, leveraging **PostgreSQL** for memory and **Redis** for message queuing. It provides a robust API for a React-based frontend to interact with multiple AI capabilities.
 
+![n8n Workflow Screenshot](./workflow_screenshot.png)
+
 ## 📁 Key Files
 
 - `workflow.json`: The complete n8n workflow definition.
