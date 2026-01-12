@@ -1,0 +1,1551 @@
+{
+  "name": "Chatbot - Single Workflow",
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Webhook Chat",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "onReceived",
+        "responseCode": 200
+      }
+    },
+    {
+      "id": "2",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return items.map(item => {\n  const body = item.json.body || {};\n  const sessionId = body.sessionId || 'single-user';\n  const text = body.text || '';\n  const fileType = body.fileType || null;\n  const imageDataUrl = body.imageDataUrl || null;\n  const binary = item.binary ? { ...item.binary } : {};\n  if (binary && !binary.file) {\n    const firstKey = Object.keys(binary)[0];\n    if (firstKey) {\n      binary.file = binary[firstKey];\n    }\n  }\n  const hasBinaryFile = Boolean(binary.file && binary.file.data);\n  const hasImageDataUrl = Boolean(imageDataUrl);\n  const resolvedFileType = fileType === 'image' && !hasBinaryFile && !hasImageDataUrl ? null : fileType;\n  return {\n    json: { sessionId, text, fileType: resolvedFileType, imageDataUrl },\n    binary,\n  };\n});"
+      }
+    },
+    {
+      "id": "3",
+      "name": "Route File Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        400,
+        0
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{$json.fileType === 'audio' ? 0 : $json.fileType === 'image' ? 1 : 2}}"
+      }
+    },
+    {
+      "id": "4",
+      "name": "OpenAI STT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        600,
+        -200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/audio/transcriptions",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formData",
+              "name": "model",
+              "value": "whisper-1"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "file"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "5",
+      "name": "Combine Text Audio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        -200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Normalize Input\"].json;\n    const transcribed = $json.text || '';\n    const combinedText = [base.text, transcribed].filter(Boolean).join('\\n');\n    return [{ json: { sessionId: base.sessionId, combinedText, fileType: 'audio' } }];"
+      }
+    },
+    {
+      "id": "6",
+      "name": "Build Image Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $json;\nif (base.imageDataUrl) {\n  return [{ json: { ...base, imageDataUrl: base.imageDataUrl } }];\n}\nconst binary = $binary || {};\nconst firstKey = Object.keys(binary)[0];\nconst file = binary.file || (firstKey ? binary[firstKey] : null);\nif (!file?.data) {\n  return [{ json: { ...base, imageDataUrl: null } }];\n}\nconst mimeType = file.mimeType || 'image/png';\nconst imageDataUrl = `data:${mimeType};base64,${file.data}`;\nreturn [{ json: { ...base, imageDataUrl } }];"
+      }
+    },
+    {
+      "id": "7",
+      "name": "Build Vision Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $json;\nconst promptText = base.text ? `User message: ${base.text}` : 'Describe the image and extract any text.';\nconst content = [{ type: 'text', text: promptText }];\nif (base.imageDataUrl) {\n  content.push({ type: 'image_url', image_url: { url: base.imageDataUrl } });\n}\nconst visionPayload = {\n  model: 'gpt-4o-mini',\n  messages: [\n    {\n      role: 'system',\n      content: 'You are an OCR and image description assistant. Extract visible text; if none, briefly describe the image.',\n    },\n    {\n      role: 'user',\n      content,\n    },\n  ],\n  max_tokens: 256,\n  temperature: 0.2,\n};\nreturn [{ json: { sessionId: base.sessionId, text: base.text, visionPayload } }];"
+      }
+    },
+    {
+      "id": "8",
+      "name": "OpenAI Vision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1000,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{$json.visionPayload}}",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "9",
+      "name": "Combine Text Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Normalize Input\"].json;\nconst imageDataUrl = $node[\"Build Image Data\"].json.imageDataUrl || null;\nconst description = $json.choices?.[0]?.message?.content || '';\nconst combinedText = [base.text, description].filter(Boolean).join('\\n');\nconst displayContent = JSON.stringify({\n  type: 'image',\n  text: base.text || '',\n  imageDataUrl,\n});\nreturn [{ json: { sessionId: base.sessionId, combinedText, displayContent, fileType: 'image' } }];"
+      }
+    },
+    {
+      "id": "10",
+      "name": "Combine Text Default",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Normalize Input\"].json;\nconst combinedText = base.text || '';\nreturn [{ json: { sessionId: base.sessionId, combinedText, fileType: 'text' } }];"
+      }
+    },
+    {
+      "id": "11",
+      "name": "Insert User Message",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO chat_memory (session_id, role, content) VALUES ($1, 'user', $2);",
+        "options": {
+          "queryReplacement": "={{[$json.sessionId, $json.displayContent || $json.combinedText]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "12",
+      "name": "Redis Push",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        0
+      ],
+      "parameters": {
+        "operation": "push",
+        "list": "={{'chat_queue:' + $json.sessionId}}",
+        "messageData": "={{JSON.stringify({text: $json.combinedText, created_at: new Date().toISOString()})}}",
+        "tail": true
+      },
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "id": "13",
+      "name": "Redis Get Lock",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        0
+      ],
+      "parameters": {
+        "operation": "get",
+        "key": "={{'chat_lock:' + $node['Redis Push'].json.sessionId}}",
+        "propertyName": "lock",
+        "keyType": "string"
+      },
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "id": "14",
+      "name": "Switch Lock",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1800,
+        0
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{$json.lock ? 1 : 0}}"
+      }
+    },
+    {
+      "id": "15",
+      "name": "Redis Set Lock",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        0
+      ],
+      "parameters": {
+        "operation": "set",
+        "key": "={{'chat_lock:' + $node['Redis Push'].json.sessionId}}",
+        "value": "processing",
+        "keyType": "string",
+        "valueIsJSON": false,
+        "expire": true,
+        "ttl": 10
+      },
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "id": "16",
+      "name": "Wait Batch",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2200,
+        0
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 4,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "17",
+      "name": "Redis Get Queue",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        0
+      ],
+      "parameters": {
+        "operation": "get",
+        "key": "={{'chat_queue:' + $node['Redis Push'].json.sessionId}}",
+        "propertyName": "queue",
+        "keyType": "list"
+      },
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "id": "18",
+      "name": "Parse Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const sessionId = $node[\"Redis Push\"].json.sessionId;\n    const queue = $json.queue || [];\n    const messages = queue.map(entry => {\n      if (typeof entry === 'string') {\n        try {\n          return JSON.parse(entry);\n        } catch (e) {\n          return { text: entry };\n        }\n      }\n      return entry;\n    });\n    const combinedUserMessage = messages.map(m => m.text || '').filter(Boolean).join('\\n');\n    return [{ json: { sessionId, combinedUserMessage, queuedMessages: messages } }];"
+      }
+    },
+    {
+      "id": "19",
+      "name": "Redis Delete Queue",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2800,
+        0
+      ],
+      "parameters": {
+        "operation": "delete",
+        "key": "={{'chat_queue:' + $node['Redis Push'].json.sessionId}}"
+      },
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "id": "20",
+      "name": "Redis Delete Lock",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3000,
+        0
+      ],
+      "parameters": {
+        "operation": "delete",
+        "key": "={{'chat_lock:' + $node['Redis Push'].json.sessionId}}"
+      },
+      "credentials": {
+        "redis": {
+          "id": "1",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "id": "21",
+      "name": "Fetch Memory",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3200,
+        0
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT COALESCE(json_agg(row_to_json(m)), '[]'::json) AS memory FROM (SELECT role, content FROM chat_memory WHERE session_id = $1 ORDER BY created_at ASC LIMIT 20) m;",
+        "options": {
+          "queryReplacement": "={{[$json.sessionId]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "22",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3400,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const sessionId = $node[\"Parse Queue\"].json.sessionId;\nconst combinedUserMessage = $node[\"Parse Queue\"].json.combinedUserMessage || '';\nconst memory = $json.memory || [];\nconst normalizeContent = (content) => {\n  if (typeof content !== 'string') return '';\n  const trimmed = content.trim();\n  if (!trimmed.startsWith('{')) return content;\n  try {\n    const parsed = JSON.parse(trimmed);\n    if (parsed && typeof parsed === 'object') {\n      if (parsed.type === 'image') {\n        return parsed.text ? `${parsed.text} (image attached)` : '(image attached)';\n      }\n      if (parsed.type === 'audio') {\n        return parsed.text || '(audio message)';\n      }\n      if (typeof parsed.text === 'string') {\n        return parsed.text;\n      }\n    }\n  } catch (e) {\n    return content;\n  }\n  return content;\n};\nconst history = memory.map(m => `${m.role}: ${normalizeContent(m.content)}`).join('\\n');\nreturn [{ json: { sessionId, combinedUserMessage, history, memory } }];"
+      }
+    },
+    {
+      "id": "23",
+      "name": "Build Intent Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const { sessionId, combinedUserMessage, history } = $json;\n    const system = `You are a routing classifier for a single-user assistant.\nReturn strict JSON with fields:\nintent: one of \"availability\",\"book_appointment\",\"book_followup\",\"general\"\nneeds_clarification: boolean\nclarification_question: string or null\nappointment: { scheduled_at: ISO 8601 or null, name: string or null, notes: string or null }\nfollowup: { scheduled_at: ISO 8601 or null, context: string or null }\nIf user asks to book a follow-up, set intent to \"book_followup\".\nIf asking for availability, set intent to \"availability\".\nIf asking to book, set intent to \"book_appointment\".\nIf missing time/date, set needs_clarification true and include a question.`;\n    const user = `Conversation history:\n${history}\n\nUser messages:\n${combinedUserMessage}`;\n    const intentPayload = {\n      model: 'gpt-4o-mini',\n      temperature: 0,\n      messages: [\n        { role: 'system', content: system },\n        { role: 'user', content: user },\n      ],\n    };\n    return [{ json: { sessionId, combinedUserMessage, history, intentPayload } }];"
+      }
+    },
+    {
+      "id": "24",
+      "name": "OpenAI Intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        3800,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{$json.intentPayload}}",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "25",
+      "name": "Parse Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4000,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Build Intent Payload\"].json;\nconst content = $json.choices?.[0]?.message?.content || '{}';\nlet parsed = {};\ntry {\n  parsed = JSON.parse(content);\n} catch (e) {\n  parsed = { intent: 'general' };\n}\nconst appointment = parsed.appointment || {};\nconst followup = parsed.followup || {};\nreturn [{\n  json: {\n    sessionId: base.sessionId,\n    combinedUserMessage: base.combinedUserMessage,\n    history: base.history,\n    intent: parsed.intent || 'general',\n    needs_clarification: parsed.needs_clarification || false,\n    clarification_question: parsed.clarification_question || '',\n    appointment,\n    followup,\n  }\n}];"
+      }
+    },
+    {
+      "id": "26",
+      "name": "Switch Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        4200,
+        0
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 4,
+        "output": "={{$json.intent === 'availability' ? 0 : $json.intent === 'book_appointment' ? 1 : $json.intent === 'book_followup' ? 2 : 3}}"
+      }
+    },
+    {
+      "id": "27",
+      "name": "Availability Tool Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        -200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $json;\nconst availability = [\n  'Mon 10:00 AM',\n  'Mon 2:00 PM',\n  'Tue 11:30 AM',\n];\nreturn [{ json: { ...base, toolName: 'availability', toolResult: { availability } } }];"
+      }
+    },
+    {
+      "id": "28",
+      "name": "Has Appointment Time",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        4400,
+        0
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{$json.appointment && $json.appointment.scheduled_at ? 0 : 1}}"
+      }
+    },
+    {
+      "id": "29",
+      "name": "Create Appointments Table",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        4600,
+        -50
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "CREATE TABLE IF NOT EXISTS appointments (id SERIAL PRIMARY KEY, session_id TEXT NOT NULL, scheduled_at TIMESTAMPTZ NOT NULL, notes TEXT, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "30",
+      "name": "Insert Appointment",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        4800,
+        -50
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO appointments (session_id, scheduled_at, notes) VALUES ($1, $2, $3);",
+        "options": {
+          "queryReplacement": "={{[$node['Parse Intent'].json.sessionId, $node['Parse Intent'].json.appointment.scheduled_at, $node['Parse Intent'].json.appointment.notes || $node['Parse Intent'].json.combinedUserMessage]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "31",
+      "name": "Appointment Tool Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5000,
+        -50
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Parse Intent\"].json;\nconst appointment = base.appointment || {};\nconst status = appointment.scheduled_at ? 'booked' : 'needs_details';\nreturn [{ json: { ...base, toolName: 'book_appointment', toolResult: { status, appointment } } }];"
+      }
+    },
+    {
+      "id": "32",
+      "name": "Appointment Missing Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4600,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Parse Intent\"].json;\nreturn [{ json: { ...base, toolName: 'book_appointment', toolResult: { status: 'needs_details', appointment: base.appointment || {} } } }];"
+      }
+    },
+    {
+      "id": "33",
+      "name": "Has Followup Time",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        4400,
+        200
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{$json.followup && $json.followup.scheduled_at ? 0 : 1}}"
+      }
+    },
+    {
+      "id": "34",
+      "name": "Insert Followup",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        4600,
+        200
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO followups (session_id, scheduled_at, context, status) VALUES ($1, $2, $3, 'pending');",
+        "options": {
+          "queryReplacement": "={{[$node['Parse Intent'].json.sessionId, $node['Parse Intent'].json.followup.scheduled_at, $node['Parse Intent'].json.followup.context || $node['Parse Intent'].json.combinedUserMessage]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "35",
+      "name": "Followup Tool Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4800,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Parse Intent\"].json;\nconst followup = base.followup || {};\nconst status = followup.scheduled_at ? 'scheduled' : 'needs_details';\nreturn [{ json: { ...base, toolName: 'book_followup', toolResult: { status, followup } } }];"
+      }
+    },
+    {
+      "id": "36",
+      "name": "Followup Missing Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4600,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $node[\"Parse Intent\"].json;\nreturn [{ json: { ...base, toolName: 'book_followup', toolResult: { status: 'needs_details', followup: base.followup || {} } } }];"
+      }
+    },
+    {
+      "id": "37",
+      "name": "General Tool Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $json;\nreturn [{ json: { ...base, toolName: 'general', toolResult: {} } }];"
+      }
+    },
+    {
+      "id": "38",
+      "name": "Build Response Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5200,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $json;\n    const system = 'You are a helpful assistant. Respond in 2-4 short messages for chat splitting. Return strict JSON: {\"messages\": [\"...\", \"...\"]}. If needs_clarification is true, ask the clarification_question. Use toolResult when provided.';\n    const user = `Conversation history:\n${base.history || ''}\n\nUser messages:\n${base.combinedUserMessage || ''}\n\nTool: ${base.toolName || 'general'}\nTool result: ${JSON.stringify(base.toolResult || {})}\nNeeds clarification: ${base.needs_clarification}\nClarification question: ${base.clarification_question || ''}`;\n    const responsePayload = {\n      model: 'gpt-4o-mini',\n      temperature: 0.4,\n      messages: [\n        { role: 'system', content: system },\n        { role: 'user', content: user },\n      ],\n    };\n    return [{ json: { sessionId: base.sessionId, responsePayload } }];"
+      }
+    },
+    {
+      "id": "39",
+      "name": "OpenAI Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        5400,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{$json.responsePayload}}",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "40",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const sessionId = $node[\"Build Response Payload\"].json.sessionId;\nconst content = $json.choices?.[0]?.message?.content || '';\nlet parsed;\ntry {\n  parsed = JSON.parse(content);\n} catch (e) {\n  parsed = { messages: [content] };\n}\nlet messages = parsed.messages;\nif (!Array.isArray(messages)) {\n  messages = [content];\n}\nreturn [{ json: { sessionId, messages } }];"
+      }
+    },
+    {
+      "id": "41",
+      "name": "Split Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5800,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const sessionId = $json.sessionId;\nconst messages = $json.messages || [];\nreturn messages.map(message => ({ json: { sessionId, content: String(message) } }));"
+      }
+    },
+    {
+      "id": "42",
+      "name": "Insert Assistant Messages",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        6000,
+        0
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO chat_memory (session_id, role, content) VALUES ($1, 'assistant', $2);",
+        "options": {
+          "queryReplacement": "={{[$json.sessionId, $json.content]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "43",
+      "name": "Webhook History",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        800
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "history",
+        "responseMode": "lastNode",
+        "responseData": "allEntries",
+        "responseCode": 200
+      }
+    },
+    {
+      "id": "44",
+      "name": "Fetch History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        800
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT id, session_id, role, content, created_at FROM chat_memory WHERE session_id = $1 ORDER BY created_at ASC;",
+        "options": {
+          "queryReplacement": "={{[$json.query.sessionId]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "45",
+      "name": "Webhook Followup",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        1400
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "followup",
+        "responseMode": "onReceived",
+        "responseCode": 200
+      }
+    },
+    {
+      "id": "46",
+      "name": "Prepare Followup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        1400
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const body = $json.body || {};\nconst followupId = body.id || body.followup_id || null;\nconst sessionId = body.session_id || body.sessionId || 'single-user';\nconst context = body.context || '';\nconst scheduledAt = body.scheduled_at || null;\nconst followupMessage = context\n  ? `Just following up on: ${context}`\n  : 'Just following up on our previous conversation.';\nreturn [{ json: { followupId, sessionId, context, scheduledAt, followupMessage } }];"
+      }
+    },
+    {
+      "id": "47",
+      "name": "Insert Followup Message",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        1400
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO chat_memory (session_id, role, content) VALUES ($1, 'assistant', $2);",
+        "options": {
+          "queryReplacement": "={{[$json.sessionId, $json.followupMessage]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "48",
+      "name": "Mark Followup Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        660,
+        1400
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "UPDATE followups SET status = 'sent' WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{[$json.followupId]}}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "49",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        2000
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "50",
+      "name": "Fetch Due Followups",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        2000
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "UPDATE followups SET status = 'processing' WHERE id IN (SELECT id FROM followups WHERE status = 'pending' AND scheduled_at <= NOW()) RETURNING id, session_id, scheduled_at, context;"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "id": "51",
+      "name": "Call Followup Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        440,
+        2000
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/followup",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{({id: $json.id, session_id: $json.session_id, context: $json.context, scheduled_at: $json.scheduled_at})}}"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Chat": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Route File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route File Type": {
+      "main": [
+        [
+          {
+            "node": "OpenAI STT",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Image Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Combine Text Default",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI STT": {
+      "main": [
+        [
+          {
+            "node": "Combine Text Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Text Audio": {
+      "main": [
+        [
+          {
+            "node": "Insert User Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Redis Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Image Data": {
+      "main": [
+        [
+          {
+            "node": "Build Vision Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Vision Payload": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Vision": {
+      "main": [
+        [
+          {
+            "node": "Combine Text Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Text Image": {
+      "main": [
+        [
+          {
+            "node": "Insert User Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Redis Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Text Default": {
+      "main": [
+        [
+          {
+            "node": "Insert User Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Redis Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Push": {
+      "main": [
+        [
+          {
+            "node": "Redis Get Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Get Lock": {
+      "main": [
+        [
+          {
+            "node": "Switch Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Lock": {
+      "main": [
+        [
+          {
+            "node": "Redis Set Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Redis Set Lock": {
+      "main": [
+        [
+          {
+            "node": "Wait Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Batch": {
+      "main": [
+        [
+          {
+            "node": "Redis Get Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Get Queue": {
+      "main": [
+        [
+          {
+            "node": "Parse Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Queue": {
+      "main": [
+        [
+          {
+            "node": "Redis Delete Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Delete Queue": {
+      "main": [
+        [
+          {
+            "node": "Redis Delete Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Delete Lock": {
+      "main": [
+        [
+          {
+            "node": "Fetch Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Memory": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Build Intent Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Intent Payload": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Intent": {
+      "main": [
+        [
+          {
+            "node": "Parse Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Intent": {
+      "main": [
+        [
+          {
+            "node": "Switch Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Intent": {
+      "main": [
+        [
+          {
+            "node": "Availability Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Has Appointment Time",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Has Followup Time",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "General Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Availability Tool Result": {
+      "main": [
+        [
+          {
+            "node": "Build Response Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Appointment Time": {
+      "main": [
+        [
+          {
+            "node": "Create Appointments Table",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Appointment Missing Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Appointments Table": {
+      "main": [
+        [
+          {
+            "node": "Insert Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Appointment": {
+      "main": [
+        [
+          {
+            "node": "Appointment Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Appointment Tool Result": {
+      "main": [
+        [
+          {
+            "node": "Build Response Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Appointment Missing Details": {
+      "main": [
+        [
+          {
+            "node": "Build Response Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Followup Time": {
+      "main": [
+        [
+          {
+            "node": "Insert Followup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Followup Missing Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Followup": {
+      "main": [
+        [
+          {
+            "node": "Followup Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Followup Tool Result": {
+      "main": [
+        [
+          {
+            "node": "Build Response Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Followup Missing Details": {
+      "main": [
+        [
+          {
+            "node": "Build Response Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "General Tool Result": {
+      "main": [
+        [
+          {
+            "node": "Build Response Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response Payload": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Response": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Response": {
+      "main": [
+        [
+          {
+            "node": "Split Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Messages": {
+      "main": [
+        [
+          {
+            "node": "Insert Assistant Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook History": {
+      "main": [
+        [
+          {
+            "node": "Fetch History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Followup": {
+      "main": [
+        [
+          {
+            "node": "Prepare Followup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Followup": {
+      "main": [
+        [
+          {
+            "node": "Insert Followup Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Followup Message": {
+      "main": [
+        [
+          {
+            "node": "Mark Followup Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Due Followups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Due Followups": {
+      "main": [
+        [
+          {
+            "node": "Call Followup Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "active": false
+}
