@@ -41,19 +41,32 @@ services:
         value: auto
       - key: N8N_ENCRYPTION_KEY
         generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false # Requires manual entry in Render dashboard
+      # Redis Environment Variables for the Redis Nodes in n8n
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: n8n-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: n8n-redis
+          property: port
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: n8n-redis
+          property: password
+
+  - type: redis
+    name: n8n-redis
+    plan: starter
+    ipAllowList: [] # Internal only usually
 
 databases:
   - name: n8n-db
     plan: starter
     databaseName: n8n
     user: n8n
-
-# Redis is not strictly required for basic n8n if we use internal queue, 
-# but requested for "messaging queue". 
-# Render Redis is a separate paid service. 
-# We can use a Redis instance:
-services:
-  - type: redis
-    name: n8n-redis
-    plan: starter
-    ipAllowList: [] # Internal only usually
