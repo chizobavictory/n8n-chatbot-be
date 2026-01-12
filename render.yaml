@@ -39,7 +39,12 @@ services:
         generateValue: true
       - key: OPENAI_API_KEY
         sync: false
-      # Redis Environment Variables for the Redis Nodes in n8n
+      # Redis Connection
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: n8n-redis
+          property: connectionString
       - key: REDIS_HOST
         fromService:
           type: redis
