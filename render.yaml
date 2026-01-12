@@ -2,8 +2,8 @@ services:
   - type: web
     name: n8n-chatbot-backend
     env: docker
-    plan: starter
-    ipAllowList: [] # Allow all
+    plan: free # or 'standard', 'starter' is deprecated for DBs but might still work for Services, using 'free' for safety
+    # ipAllowList: [] # Enterprise only feature
     envVars:
       - key: DB_TYPE
         value: postgresdb
@@ -58,11 +58,11 @@ services:
 
   - type: redis
     name: n8n-redis
-    plan: starter
-    ipAllowList: [] # Internal only usually
+    plan: free # Redis free tier
+    # ipAllowList: [] # Enterprise only
 
 databases:
   - name: n8n-db
-    plan: starter
+    plan: free # PostgreSQL free tier, 'starter' is legacy/unsupported
     databaseName: n8n
     user: n8n
